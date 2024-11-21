@@ -6,11 +6,13 @@ import {StdCheats} from "forge-std/StdCheats.sol";
 import {StdUtils} from "forge-std/StdUtils.sol";
 import {console} from "forge-std/console.sol";
 import {AddressSet, LibAddressSet} from "../helpers/AddressSet.sol";
+import {DepositIdSet, LibDepositIdSet} from "../helpers/DepositIdSet.sol";
 import {GovernanceStaker} from "src/GovernanceStaker.sol";
 import {IERC20} from "openzeppelin/token/ERC20/IERC20.sol";
 
 contract GovernanceStakerHandler is CommonBase, StdCheats, StdUtils {
   using LibAddressSet for AddressSet;
+  using LibDepositIdSet for DepositIdSet;
 
   // system setup
   GovernanceStaker public govStaker;
@@ -23,6 +25,7 @@ contract GovernanceStakerHandler is CommonBase, StdCheats, StdUtils {
   AddressSet internal _depositors;
   AddressSet internal _delegates;
   AddressSet internal _claimers;
+  DepositIdSet internal _depositIdSet;
   AddressSet internal _surrogates;
   AddressSet internal _rewardNotifiers;
   mapping(address => uint256[]) internal _depositIds;
@@ -113,6 +116,7 @@ contract GovernanceStakerHandler is CommonBase, StdCheats, StdUtils {
 
     // update handler state
     _depositIds[_currentActor].push(ghost_depositCount);
+    _depositIdSet.add(GovernanceStaker.DepositIdentifier.wrap(ghost_depositCount));
     ghost_depositCount++;
     _surrogates.add(address(govStaker.surrogates(_delegatee)));
     ghost_stakeSum += _amount;
@@ -205,6 +209,13 @@ contract GovernanceStakerHandler is CommonBase, StdCheats, StdUtils {
     returns (uint256)
   {
     return _claimers.reduce(acc, func);
+  }
+
+  function reduceDeposits(
+    uint256 acc,
+    function(uint256,GovernanceStaker.DepositIdentifier) external returns (uint256) func
+  ) public returns (uint256) {
+    return _depositIdSet.reduce(acc, func);
   }
 
   function reduceDelegates(uint256 acc, function(uint256,address) external returns (uint256) func)
