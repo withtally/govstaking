@@ -4,6 +4,11 @@ pragma solidity ^0.8.23;
 import {IEarningPowerCalculator} from "src/interfaces/IEarningPowerCalculator.sol";
 
 contract MockFullEarningPowerCalculator is IEarningPowerCalculator {
+  uint256 public multiplierBips = 10_000;
+  bool public useMultiplier;
+  uint256 public fixedReturnValue;
+  bool public useFixedReturn;
+
   struct StoredEarningPower {
     uint256 earningPower;
     bool isQualified;
@@ -45,6 +50,21 @@ contract MockFullEarningPowerCalculator is IEarningPowerCalculator {
       StoredEarningPower({earningPower: _earningPower, isQualified: _isQualified, isOverride: true});
   }
 
+  function __setMultiplierBips(uint256 _multiplierBips) external {
+    multiplierBips = _multiplierBips;
+    useMultiplier = true;
+  }
+
+  function __disableMultiplier() external {
+    useMultiplier = false;
+  }
+
+  function __setFixedReturn(uint256 _value) external {
+    fixedReturnValue = _value;
+    useFixedReturn = true;
+    useMultiplier = false;
+  }
+
   function __getEarningPower(uint256 _amountStaked, address _delegatee)
     internal
     view
@@ -55,7 +75,10 @@ contract MockFullEarningPowerCalculator is IEarningPowerCalculator {
     if (_storedEarningPower.isOverride) {
       return (_storedEarningPower.earningPower, _storedEarningPower.isQualified);
     } else {
-      return (_amountStaked, true);
+      if (useFixedReturn) return (fixedReturnValue, true);
+      uint256 _calculatedAmount =
+        useMultiplier ? (_amountStaked * multiplierBips) / 10_000 : _amountStaked;
+      return (_calculatedAmount, true);
     }
   }
 }

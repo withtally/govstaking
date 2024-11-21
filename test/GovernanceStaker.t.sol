@@ -785,6 +785,41 @@ contract Stake is GovernanceStakerTest {
     vm.expectRevert(GovernanceStaker.GovernanceStaker__InvalidAddress.selector);
     govStaker.stake(_amount, _delegatee, address(0));
   }
+
+  function testFuzz_SetsScaledEarningPowerWhenCalculatorScalesStakeAmount(
+    address _depositor,
+    uint256 _stakeAmount,
+    uint256 _multiplierBips
+  ) public {
+    _stakeAmount = _boundToRealisticStake(_stakeAmount);
+    _multiplierBips = bound(_multiplierBips, 0, 20_000);
+
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+
+    (, GovernanceStaker.DepositIdentifier _depositId) =
+      _boundMintAndStake(_depositor, _stakeAmount, _depositor);
+
+    (,, uint96 _actualEarningPower,,,,) = govStaker.deposits(_depositId);
+    uint256 _expectedEarningPower = (_stakeAmount * _multiplierBips) / 10_000;
+    assertEq(_actualEarningPower, _expectedEarningPower);
+  }
+
+  function testFuzz_SetsFixedEarningPowerWhenCalculatorReturnsConstantAmount(
+    address _depositor,
+    uint256 _stakeAmount,
+    uint256 _fixedEarningPower
+  ) public {
+    _stakeAmount = _boundToRealisticStake(_stakeAmount);
+    _fixedEarningPower = _boundToRealisticStake(_fixedEarningPower);
+
+    earningPowerCalculator.__setFixedReturn(_fixedEarningPower);
+
+    (, GovernanceStaker.DepositIdentifier _depositId) =
+      _boundMintAndStake(_depositor, _stakeAmount, _depositor);
+
+    (,, uint96 _actualEarningPower,,,,) = govStaker.deposits(_depositId);
+    assertEq(_actualEarningPower, _fixedEarningPower);
+  }
 }
 
 contract PermitAndStake is GovernanceStakerTest {
@@ -919,6 +954,105 @@ contract PermitAndStake is GovernanceStakerTest {
       )
     );
     govStaker.permitAndStake(_depositAmount, _delegatee, _claimer, _deadline, _v, _r, _s);
+  }
+
+  function testFuzz_SetsScaledEarningPowerWhenStaking(
+    uint256 _depositorPrivateKey,
+    uint256 _depositAmount,
+    address _delegatee,
+    address _claimer,
+    uint256 _deadline,
+    uint256 _currentNonce,
+    uint256 _multiplierBips
+  ) public {
+    vm.assume(_delegatee != address(0) && _claimer != address(0));
+    _deadline = bound(_deadline, block.timestamp, type(uint256).max);
+    _depositorPrivateKey = bound(_depositorPrivateKey, 1, 100e18);
+    address _depositor = vm.addr(_depositorPrivateKey);
+    _depositAmount = _boundMintAmount(_depositAmount);
+    _multiplierBips = bound(_multiplierBips, 0, 20_000); // 0% to 200%
+
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+
+    _mintGovToken(_depositor, _depositAmount);
+    stdstore.target(address(govToken)).sig("nonces(address)").with_key(_depositor).checked_write(
+      _currentNonce
+    );
+
+    bytes32 _message = keccak256(
+      abi.encode(
+        PERMIT_TYPEHASH,
+        _depositor,
+        address(govStaker),
+        _depositAmount,
+        govToken.nonces(_depositor),
+        _deadline
+      )
+    );
+
+    bytes32 _messageHash =
+      keccak256(abi.encodePacked("\x19\x01", govToken.DOMAIN_SEPARATOR(), _message));
+    (uint8 _v, bytes32 _r, bytes32 _s) = vm.sign(_depositorPrivateKey, _messageHash);
+
+    vm.prank(_depositor);
+    GovernanceStaker.DepositIdentifier _depositId =
+      govStaker.permitAndStake(_depositAmount, _delegatee, _claimer, _deadline, _v, _r, _s);
+
+    uint256 _expectedEarningPower = (_depositAmount * _multiplierBips) / 10_000;
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+
+    assertEq(_deposit.earningPower, _expectedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _expectedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _expectedEarningPower);
+  }
+
+  function testFuzz_SetsFixedEarningPowerWhenStaking(
+    uint256 _depositorPrivateKey,
+    uint256 _depositAmount,
+    address _delegatee,
+    address _claimer,
+    uint256 _deadline,
+    uint256 _currentNonce,
+    uint256 _fixedEarningPower
+  ) public {
+    vm.assume(_delegatee != address(0) && _claimer != address(0));
+    _deadline = bound(_deadline, block.timestamp, type(uint256).max);
+    _depositorPrivateKey = bound(_depositorPrivateKey, 1, 100e18);
+    address _depositor = vm.addr(_depositorPrivateKey);
+    _depositAmount = _boundMintAmount(_depositAmount);
+    _fixedEarningPower = _boundToRealisticStake(_fixedEarningPower);
+
+    earningPowerCalculator.__setFixedReturn(_fixedEarningPower);
+
+    _mintGovToken(_depositor, _depositAmount);
+    stdstore.target(address(govToken)).sig("nonces(address)").with_key(_depositor).checked_write(
+      _currentNonce
+    );
+
+    bytes32 _message = keccak256(
+      abi.encode(
+        PERMIT_TYPEHASH,
+        _depositor,
+        address(govStaker),
+        _depositAmount,
+        govToken.nonces(_depositor),
+        _deadline
+      )
+    );
+
+    bytes32 _messageHash =
+      keccak256(abi.encodePacked("\x19\x01", govToken.DOMAIN_SEPARATOR(), _message));
+    (uint8 _v, bytes32 _r, bytes32 _s) = vm.sign(_depositorPrivateKey, _messageHash);
+
+    vm.prank(_depositor);
+    GovernanceStaker.DepositIdentifier _depositId =
+      govStaker.permitAndStake(_depositAmount, _delegatee, _claimer, _deadline, _v, _r, _s);
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+
+    assertEq(_deposit.earningPower, _fixedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _fixedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _fixedEarningPower);
   }
 }
 
@@ -1118,6 +1252,79 @@ contract StakeMore is GovernanceStakerTest {
       )
     );
     govStaker.stakeMore(_depositId, _addAmount);
+  }
+
+  function testFuzz_SetsCorrectEarningPowerWhenCalculatorScalesStakeAmount(
+    address _depositor,
+    uint256 _depositAmount,
+    uint256 _addAmount,
+    address _delegatee,
+    uint256 _multiplierBips
+  ) public {
+    _multiplierBips = bound(_multiplierBips, 0, 20_000);
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) = _boundMintAndStake(_depositor, _depositAmount, _delegatee);
+
+    _addAmount = _boundToRealisticStake(_addAmount);
+    _mintGovToken(_depositor, _addAmount);
+    vm.startPrank(_depositor);
+    govToken.approve(address(govStaker), _addAmount);
+    govStaker.stakeMore(_depositId, _addAmount);
+    vm.stopPrank();
+
+    (,, uint96 _actualEarningPower,,,,) = govStaker.deposits(_depositId);
+    uint256 _expectedEarningPower = ((_depositAmount + _addAmount) * _multiplierBips) / 10_000;
+    assertEq(_actualEarningPower, _expectedEarningPower);
+  }
+
+  function testFuzz_SetsFixedEarningPowerWhenCalculatorReturnsConstantAmount(
+    address _depositor,
+    uint256 _depositAmount,
+    uint256 _addAmount,
+    address _delegatee,
+    uint256 _fixedEarningPower
+  ) public {
+    _fixedEarningPower = _boundToRealisticStake(_fixedEarningPower);
+    earningPowerCalculator.__setFixedReturn(_fixedEarningPower);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) = _boundMintAndStake(_depositor, _depositAmount, _delegatee);
+
+    _addAmount = _boundToRealisticStake(_addAmount);
+    _mintGovToken(_depositor, _addAmount);
+    vm.startPrank(_depositor);
+    govToken.approve(address(govStaker), _addAmount);
+    govStaker.stakeMore(_depositId, _addAmount);
+    vm.stopPrank();
+
+    (,, uint96 _actualEarningPower,,,,) = govStaker.deposits(_depositId);
+    assertEq(_actualEarningPower, _fixedEarningPower);
+  }
+
+  function testFuzz_UpdatesGlobalTotalEarningPowerWhenStakingMore(
+    address _depositor,
+    uint256 _depositAmount,
+    uint256 _addAmount,
+    address _delegatee,
+    uint256 _multiplierBips
+  ) public {
+    _multiplierBips = bound(_multiplierBips, 0, 20_000);
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) = _boundMintAndStake(_depositor, _depositAmount, _delegatee);
+
+    _addAmount = _boundToRealisticStake(_addAmount);
+    _mintGovToken(_depositor, _addAmount);
+    vm.startPrank(_depositor);
+    govToken.approve(address(govStaker), _addAmount);
+    govStaker.stakeMore(_depositId, _addAmount);
+    vm.stopPrank();
+
+    uint256 _expectedEarningPower = ((_depositAmount + _addAmount) * _multiplierBips) / 10_000;
+    assertEq(govStaker.totalEarningPower(), _expectedEarningPower);
   }
 }
 
@@ -1319,6 +1526,95 @@ contract PermitAndStakeMore is GovernanceStakerTest {
       )
     );
     govStaker.permitAndStakeMore(_depositId, _stakeMoreAmount, _deadline, _v, _r, _s);
+  }
+
+  function testFuzz_SetsScaledEarningPowerWhenStakingMore(
+    uint256 _depositorPrivateKey,
+    uint256 _depositAmount,
+    uint256 _addAmount,
+    address _delegatee,
+    address _claimer,
+    uint256 _multiplierBips
+  ) public {
+    vm.assume(_delegatee != address(0) && _claimer != address(0));
+    _depositorPrivateKey = bound(_depositorPrivateKey, 1, 100e18);
+    address _depositor = vm.addr(_depositorPrivateKey);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) =
+      _boundMintAndStake(_depositor, _depositAmount, _delegatee, _claimer);
+
+    _addAmount = _boundToRealisticStake(_addAmount);
+    _multiplierBips = bound(_multiplierBips, 0, 20_000);
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+
+    _executePermitAndStakeMore(_depositor, _depositorPrivateKey, _depositId, _addAmount);
+
+    uint256 _totalStaked = _depositAmount + _addAmount;
+    uint256 _expectedEarningPower = (_totalStaked * _multiplierBips) / 10_000;
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+
+    assertEq(_deposit.earningPower, _expectedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _expectedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _expectedEarningPower);
+  }
+
+  function testFuzz_SetsFixedEarningPowerWhenStakingMore(
+    uint256 _depositorPrivateKey,
+    uint256 _depositAmount,
+    uint256 _addAmount,
+    address _delegatee,
+    address _claimer,
+    uint256 _fixedEarningPower
+  ) public {
+    vm.assume(_delegatee != address(0) && _claimer != address(0));
+    _depositorPrivateKey = bound(_depositorPrivateKey, 1, 100e18);
+    address _depositor = vm.addr(_depositorPrivateKey);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) =
+      _boundMintAndStake(_depositor, _depositAmount, _delegatee, _claimer);
+
+    _addAmount = _boundToRealisticStake(_addAmount);
+    _fixedEarningPower = _boundToRealisticStake(_fixedEarningPower);
+    earningPowerCalculator.__setFixedReturn(_fixedEarningPower);
+
+    _executePermitAndStakeMore(_depositor, _depositorPrivateKey, _depositId, _addAmount);
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+
+    assertEq(_deposit.earningPower, _fixedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _fixedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _fixedEarningPower);
+  }
+
+  // Helper function to handle permit and stakeMore execution without stack too deep errors
+  function _executePermitAndStakeMore(
+    address _depositor,
+    uint256 _depositorPrivateKey,
+    GovernanceStaker.DepositIdentifier _depositId,
+    uint256 _addAmount
+  ) internal {
+    _mintGovToken(_depositor, _addAmount);
+
+    uint256 _deadline = block.timestamp + 1 days;
+    uint256 _currentNonce = 0;
+    stdstore.target(address(govToken)).sig("nonces(address)").with_key(_depositor).checked_write(
+      _currentNonce
+    );
+
+    bytes32 _message = keccak256(
+      abi.encode(
+        PERMIT_TYPEHASH, _depositor, address(govStaker), _addAmount, _currentNonce, _deadline
+      )
+    );
+
+    bytes32 _messageHash =
+      keccak256(abi.encodePacked("\x19\x01", govToken.DOMAIN_SEPARATOR(), _message));
+    (uint8 _v, bytes32 _r, bytes32 _s) = vm.sign(_depositorPrivateKey, _messageHash);
+
+    vm.prank(_depositor);
+    govStaker.permitAndStakeMore(_depositId, _addAmount, _deadline, _v, _r, _s);
   }
 }
 
@@ -1524,6 +1820,60 @@ contract AlterDelegatee is GovernanceStakerTest {
     vm.expectRevert(GovernanceStaker.GovernanceStaker__InvalidAddress.selector);
     govStaker.alterDelegatee(_depositId, address(0));
   }
+
+  function testFuzz_SetsScaledEarningPowerWhenCalculatorScalesStakeAmount(
+    address _depositor,
+    uint256 _depositAmount,
+    address _firstDelegatee,
+    address _claimer,
+    address _newDelegatee,
+    uint256 _multiplierBips
+  ) public {
+    vm.assume(_newDelegatee != address(0) && _newDelegatee != _firstDelegatee);
+
+    _multiplierBips = bound(_multiplierBips, 0, 20_000);
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) =
+      _boundMintAndStake(_depositor, _depositAmount, _firstDelegatee, _claimer);
+
+    vm.prank(_depositor);
+    govStaker.alterDelegatee(_depositId, _newDelegatee);
+
+    uint256 _expectedEarningPower = (_depositAmount * _multiplierBips) / 10_000;
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+    assertEq(_deposit.earningPower, _expectedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _expectedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _expectedEarningPower);
+  }
+
+  function testFuzz_SetsFixedEarningPowerWhenCalculatorReturnsConstantAmount(
+    address _depositor,
+    uint256 _depositAmount,
+    address _firstDelegatee,
+    address _claimer,
+    address _newDelegatee,
+    uint256 _fixedEarningPower
+  ) public {
+    vm.assume(_newDelegatee != address(0) && _newDelegatee != _firstDelegatee);
+
+    _fixedEarningPower = _boundToRealisticStake(_fixedEarningPower);
+    earningPowerCalculator.__setFixedReturn(_fixedEarningPower);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) =
+      _boundMintAndStake(_depositor, _depositAmount, _firstDelegatee, _claimer);
+
+    vm.prank(_depositor);
+    govStaker.alterDelegatee(_depositId, _newDelegatee);
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+    assertEq(_deposit.earningPower, _fixedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _fixedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _fixedEarningPower);
+  }
 }
 
 contract AlterClaimer is GovernanceStakerTest {
@@ -1720,6 +2070,60 @@ contract AlterClaimer is GovernanceStakerTest {
     vm.expectRevert(GovernanceStaker.GovernanceStaker__InvalidAddress.selector);
     govStaker.alterClaimer(_depositId, address(0));
   }
+
+  function testFuzz_SetsScaledEarningPowerWhenCalculatorScalesStakeAmount(
+    address _depositor,
+    uint256 _depositAmount,
+    address _delegatee,
+    address _firstClaimer,
+    address _newClaimer,
+    uint256 _multiplierBips
+  ) public {
+    vm.assume(_newClaimer != address(0) && _newClaimer != _firstClaimer);
+
+    _multiplierBips = bound(_multiplierBips, 0, 20_000);
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) =
+      _boundMintAndStake(_depositor, _depositAmount, _delegatee, _firstClaimer);
+
+    vm.prank(_depositor);
+    govStaker.alterClaimer(_depositId, _newClaimer);
+
+    uint256 _expectedEarningPower = (_depositAmount * _multiplierBips) / 10_000;
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+    assertEq(_deposit.earningPower, _expectedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _expectedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _expectedEarningPower);
+  }
+
+  function testFuzz_SetsFixedEarningPowerWhenCalculatorReturnsConstantAmount(
+    address _depositor,
+    uint256 _depositAmount,
+    address _delegatee,
+    address _firstClaimer,
+    address _newClaimer,
+    uint256 _fixedEarningPower
+  ) public {
+    vm.assume(_newClaimer != address(0) && _newClaimer != _firstClaimer);
+
+    _fixedEarningPower = _boundToRealisticStake(_fixedEarningPower);
+    earningPowerCalculator.__setFixedReturn(_fixedEarningPower);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) =
+      _boundMintAndStake(_depositor, _depositAmount, _delegatee, _firstClaimer);
+
+    vm.prank(_depositor);
+    govStaker.alterClaimer(_depositId, _newClaimer);
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+    assertEq(_deposit.earningPower, _fixedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _fixedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _fixedEarningPower);
+  }
 }
 
 contract Withdraw is GovernanceStakerTest {
@@ -1898,6 +2302,50 @@ contract Withdraw is GovernanceStakerTest {
     vm.prank(_depositor);
     vm.expectRevert();
     govStaker.withdraw(_depositId, _amount + _amountOver);
+  }
+
+  function testFuzz_SetsScaledEarningPowerWhenCalculatorScalesStakeAmount(
+    address _depositor,
+    uint256 _depositAmount,
+    address _delegatee,
+    uint256 _withdrawalAmount,
+    uint256 _multiplierBips
+  ) public {
+    _multiplierBips = bound(_multiplierBips, 0, 20_000);
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) = _boundMintAndStake(_depositor, _depositAmount, _delegatee);
+    _withdrawalAmount = bound(_withdrawalAmount, 0, _depositAmount);
+
+    vm.prank(_depositor);
+    govStaker.withdraw(_depositId, _withdrawalAmount);
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+    uint256 _remainingStake = _depositAmount - _withdrawalAmount;
+    uint256 _expectedEarningPower = (_remainingStake * _multiplierBips) / 10_000;
+    assertEq(_deposit.earningPower, _expectedEarningPower);
+  }
+
+  function testFuzz_SetsFixedEarningPowerWhenCalculatorReturnsConstantAmount(
+    address _depositor,
+    uint256 _depositAmount,
+    address _delegatee,
+    uint256 _withdrawalAmount,
+    uint256 _fixedEarningPower
+  ) public {
+    _fixedEarningPower = _boundToRealisticStake(_fixedEarningPower);
+    earningPowerCalculator.__setFixedReturn(_fixedEarningPower);
+
+    GovernanceStaker.DepositIdentifier _depositId;
+    (_depositAmount, _depositId) = _boundMintAndStake(_depositor, _depositAmount, _delegatee);
+    _withdrawalAmount = bound(_withdrawalAmount, 0, _depositAmount);
+
+    vm.prank(_depositor);
+    govStaker.withdraw(_depositId, _withdrawalAmount);
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+    assertEq(_deposit.earningPower, _fixedEarningPower);
   }
 }
 
@@ -2889,6 +3337,42 @@ contract BumpEarningPower is GovernanceStakerRewardsTest {
     vm.prank(_bumpCaller);
     vm.expectRevert(stdError.arithmeticError);
     govStaker.bumpEarningPower(_depositId, _tipReceiver, _requestedTip);
+  }
+
+  function testFuzz_EarningPowerChangesAfterMultiplierUpdate(
+    address _depositor,
+    uint256 _stakeAmount,
+    uint256 _multiplierBips,
+    uint256 _rewardAmount
+  ) public {
+    vm.assume(_depositor != address(0));
+    _stakeAmount = _boundToRealisticStake(_stakeAmount);
+    _multiplierBips = bound(_multiplierBips, 1, 20_000);
+    _rewardAmount = bound(_rewardAmount, 1000e18, 10_000_000e18);
+    vm.assume(_multiplierBips != 10_000);
+
+    // Set up the governance staker with a default multiplier
+    earningPowerCalculator.__setMultiplierBips(10_000);
+
+    vm.prank(admin);
+    govStaker.setRewardNotifier(rewardNotifier, true);
+
+    (, GovernanceStaker.DepositIdentifier depositId) =
+      _boundMintAndStake(_depositor, _stakeAmount, _depositor);
+
+    _mintTransferAndNotifyReward(_rewardAmount);
+
+    _jumpAhead(1 days);
+
+    // Update multiplier and bump earning power
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+    vm.prank(_depositor);
+    govStaker.bumpEarningPower(depositId, _depositor, 0);
+
+    // Verify the earning power update
+    (,, uint96 actualEarningPower,,,,) = govStaker.deposits(depositId);
+    uint256 expectedEarningPower = (_stakeAmount * _multiplierBips) / 10_000;
+    assertEq(actualEarningPower, expectedEarningPower, "Earning power should be updated");
   }
 }
 
@@ -4596,6 +5080,66 @@ contract ClaimReward is GovernanceStakerRewardsTest {
     vm.prank(_depositor);
     vm.expectRevert(stdError.arithmeticError);
     govStaker.claimReward(_depositId);
+  }
+
+  function testFuzz_SetsScaledEarningPowerWhenCalculatorScalesStakeAmount(
+    address _depositor,
+    address _delegatee,
+    address _claimer,
+    uint256 _stakeAmount,
+    uint256 _rewardAmount,
+    uint256 _multiplierBips
+  ) public {
+    vm.assume(_depositor != address(govStaker));
+    (_stakeAmount, _rewardAmount) = _boundToRealisticStakeAndReward(_stakeAmount, _rewardAmount);
+
+    _multiplierBips = bound(_multiplierBips, 0, 20_000);
+    earningPowerCalculator.__setMultiplierBips(_multiplierBips);
+
+    (, GovernanceStaker.DepositIdentifier _depositId) =
+      _boundMintAndStake(_depositor, _stakeAmount, _delegatee, _claimer);
+
+    _mintTransferAndNotifyReward(_rewardAmount);
+    _jumpAheadByPercentOfRewardDuration(100);
+
+    vm.prank(_depositor);
+    govStaker.claimReward(_depositId);
+
+    uint256 _expectedEarningPower = (_stakeAmount * _multiplierBips) / 10_000;
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+    assertEq(_deposit.earningPower, _expectedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _expectedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _expectedEarningPower);
+  }
+
+  function testFuzz_SetsFixedEarningPowerWhenCalculatorReturnsConstantAmount(
+    address _depositor,
+    address _delegatee,
+    address _claimer,
+    uint256 _stakeAmount,
+    uint256 _rewardAmount,
+    uint256 _fixedEarningPower
+  ) public {
+    vm.assume(_depositor != address(govStaker));
+    (_stakeAmount, _rewardAmount) = _boundToRealisticStakeAndReward(_stakeAmount, _rewardAmount);
+    _fixedEarningPower = _boundToRealisticStake(_fixedEarningPower);
+
+    earningPowerCalculator.__setFixedReturn(_fixedEarningPower);
+
+    (, GovernanceStaker.DepositIdentifier _depositId) =
+      _boundMintAndStake(_depositor, _stakeAmount, _delegatee, _claimer);
+
+    _mintTransferAndNotifyReward(_rewardAmount);
+    _jumpAheadByPercentOfRewardDuration(100);
+
+    vm.prank(_depositor);
+    govStaker.claimReward(_depositId);
+
+    GovernanceStaker.Deposit memory _deposit = _fetchDeposit(_depositId);
+    assertEq(_deposit.earningPower, _fixedEarningPower);
+    assertEq(govStaker.totalEarningPower(), _fixedEarningPower);
+    assertEq(govStaker.depositorTotalEarningPower(_depositor), _fixedEarningPower);
   }
 }
 
